@@ -43,6 +43,7 @@ export default function App() {
         fly={fly}
       />
       <div className="view-buttons">
+        <button onClick={() => flyTo({ kind: 'topDown' })} title="Flat, north-up view (press again for 3D)">Top down</button>
         <button onClick={() => flyTo({ kind: 'overview' })}>Neighbourhood</button>
         <button onClick={() => flyTo({ kind: 'site' })}>Penrith</button>
         <button className="primary" onClick={() => { setSelection({ block: '72', stack: '12', floor: 39 }); flyTo({ kind: 'myUnit' }); }}>

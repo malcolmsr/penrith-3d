@@ -16,7 +16,7 @@ export interface Selection {
 
 const PAD = () => ({ top: 70, bottom: 20, left: 20, right: window.innerWidth > 720 ? 360 : 20 });
 
-export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block'; block?: BlockId; nonce: number };
+export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block' | 'topDown'; block?: BlockId; nonce: number };
 
 interface Props {
   selection: Selection;
@@ -170,7 +170,11 @@ export default function MapView(props: Props) {
     const map = mapRef.current;
     if (!map || props.fly.nonce === 0) return;
     const f = props.fly;
-    if (f.kind === 'overview') {
+    if (f.kind === 'topDown') {
+      // Toggle: flat north-up plan view, or back to a tilted 3D view from the same spot.
+      const flat = map.getPitch() < 5 && Math.abs(map.getBearing()) < 1;
+      map.easeTo(flat ? { pitch: 60, bearing: -30, duration: 1000 } : { pitch: 0, bearing: 0, duration: 1000 });
+    } else if (f.kind === 'overview') {
       map.flyTo({ center: [SITE_ANCHOR.lng, SITE_ANCHOR.lat - 0.0025], zoom: 14.8, pitch: 55, bearing: -20, padding: PAD(), duration: 2200 });
     } else if (f.kind === 'site') {
       map.flyTo({ ...SITE_VIEW, padding: PAD(), duration: 1800 });
