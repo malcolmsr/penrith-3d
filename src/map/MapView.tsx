@@ -6,6 +6,7 @@ import { blockTop, buildGroundFeatures, buildTowerFeatures, stackTop, unitPoint 
 import { DISTANCE_RINGS, type CategoryId, type Place } from '../data/nearby';
 import { createPlaceMarkers, distanceRings } from './places';
 import { sgDateAt, sunPosition } from './sun';
+import { enableGentleRotate } from './gentleRotate';
 
 export interface Selection {
   block: BlockId | null;
@@ -59,6 +60,7 @@ export default function MapView(props: Props) {
     map.setPadding(PAD()); // keep the subject clear of the side panel
     if (import.meta.env.DEV) (window as unknown as { __map: MlMap }).__map = map;
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
+    enableGentleRotate(map);
 
     map.on('load', () => {
       // Quiet the basemap so the 3D massing reads like the reference "clay" model.
