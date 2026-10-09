@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import maplibregl, { type ExpressionSpecification, type Map as MlMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { BLOCKS, MY_UNIT, OSM_PENRITH_IDS, SITE_ANCHOR, STACK_COLORS, type BlockId } from '../data/penrith';
@@ -7,6 +7,8 @@ import { DISTANCE_RINGS, type CategoryId, type Place } from '../data/nearby';
 import { createPlaceMarkers, distanceRings } from './places';
 import { sgDateAt, sunPosition } from './sun';
 import { enableGentleRotate } from './gentleRotate';
+import { HIDE_OWN_TOWER_TOP, UNIT_DEFAULT_BEARING, UNIT_PITCH_RANGE, compassPoint, lockNavigation, unitCamera, type Look } from './unitView';
+import Compass from '../components/Compass';
 
 export interface Selection {
   block: BlockId | null;
@@ -16,7 +18,7 @@ export interface Selection {
 
 const PAD = () => ({ top: 70, bottom: 20, left: 20, right: window.innerWidth > 720 ? 360 : 20 });
 
-export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block' | 'topDown'; block?: BlockId; nonce: number };
+export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block' | 'topDown' | 'unitView'; block?: BlockId; nonce: number };
 
 interface Props {
   selection: Selection;
@@ -45,6 +47,14 @@ export default function MapView(props: Props) {
   const labelsRef = useRef<Label[]>([]);
   const readyRef = useRef(false);
   const placesRef = useRef<ReturnType<typeof createPlaceMarkers> | null>(null);
+  const [bearing, setBearing] = useState(SITE_VIEW.bearing);
+  // Non-null while looking out from #39-12.
+  const [look, setLookState] = useState<Look | null>(null);
+  const lookRef = useRef<Look | null>(null);
+  const setLook = (l: Look | null) => {
+    lookRef.current = l;
+    setLookState(l);
+  };
 
   // ---- init once -------------------------------------------------------------
   useEffect(() => {
@@ -60,7 +70,20 @@ export default function MapView(props: Props) {
     map.setPadding(PAD()); // keep the subject clear of the side panel
     if (import.meta.env.DEV) (window as unknown as { __map: MlMap }).__map = map;
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
-    enableGentleRotate(map);
+    enableGentleRotate(map, undefined, (dB, dP) => {
+      const l = lookRef.current;
+      if (!l) return false;
+      const next = { bearing: l.bearing + dB, pitch: clamp(l.pitch + dP, ...UNIT_PITCH_RANGE) };
+      lookRef.current = next;
+      map.jumpTo(unitCamera(map, next));
+      return true;
+    });
+    map.on('rotate', () => setBearing(map.getBearing()));
+    // The unit camera's zoom depends on canvas height; re-place it when the window changes.
+    map.on('resize', () => {
+      if (lookRef.current) map.jumpTo(unitCamera(map, lookRef.current));
+    });
+    map.on('move', () => placesRef.current?.setFacing(lookRef.current ? map.getBearing() : null));
 
     map.on('load', () => {
       // Quiet the basemap so the 3D massing reads like the reference "clay" model.
@@ -170,6 +193,11 @@ export default function MapView(props: Props) {
     const map = mapRef.current;
     if (!map || props.fly.nonce === 0) return;
     const f = props.fly;
+    if (f.kind === 'unitView') {
+      enterUnitView(map);
+      return;
+    }
+    if (lookRef.current) exitUnitView(map);
     if (f.kind === 'topDown') {
       // Toggle: flat north-up plan view, or back to a tilted 3D view from the same spot.
       const flat = map.getPitch() < 5 && Math.abs(map.getBearing()) < 1;
@@ -190,8 +218,70 @@ export default function MapView(props: Props) {
     }
   }, [props.fly.nonce]);
 
-  return <div ref={container} className="map" />;
+  function enterUnitView(map: MlMap) {
+    const l = { bearing: UNIT_DEFAULT_BEARING, pitch: 78 };
+    setLook(l);
+    lockNavigation(map, true);
+    map.setFilter('penrith-towers', HIDE_OWN_TOWER_TOP);
+    map.getContainer().classList.add('unit-view');
+    map.flyTo({ ...unitCamera(map, l), duration: 2500 });
+  }
+
+  function exitUnitView(map: MlMap) {
+    setLook(null);
+    lockNavigation(map, false);
+    map.setFilter('penrith-towers', null);
+    map.getContainer().classList.remove('unit-view');
+    placesRef.current?.setFacing(null);
+    map.setPadding(PAD());
+  }
+
+  const turn = (deg: number) => {
+    const map = mapRef.current;
+    const l = lookRef.current;
+    if (!map || !l) return;
+    const next = { ...l, bearing: l.bearing + deg };
+    setLook(next);
+    map.easeTo({ ...unitCamera(map, next), duration: 600 });
+  };
+
+  const resetNorth = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (lookRef.current) turn(-normalise(lookRef.current.bearing) + (normalise(lookRef.current.bearing) > 180 ? 360 : 0));
+    else map.easeTo({ bearing: 0, duration: 600 });
+  };
+
+  const exit = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    exitUnitView(map);
+    const t = unitPoint(MY_UNIT.stack, MY_UNIT.floor);
+    map.flyTo({ center: aimAt(t.lngLat, t.alt, 66, -40), zoom: 17.0, pitch: 66, bearing: -40, padding: PAD(), duration: 1800 });
+  };
+
+  const heading = normalise(look ? look.bearing : bearing);
+  return (
+    <>
+      <div ref={container} className="map" />
+      <Compass bearing={look ? look.bearing : bearing} onReset={resetNorth} />
+      {look && (
+        <div className="unit-view-bar">
+          <button onClick={() => turn(-45)} title="Turn left">◀</button>
+          <div>
+            <b>View from #{MY_UNIT.floor}-{MY_UNIT.stack}</b>
+            <span>Facing {compassPoint(heading)} · {Math.round(heading)}° · drag to look around</span>
+          </div>
+          <button onClick={() => turn(45)} title="Turn right">▶</button>
+          <button className="exit" onClick={exit}>Exit</button>
+        </div>
+      )}
+    </>
+  );
 }
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const normalise = (b: number) => ((b % 360) + 360) % 360;
 
 // ------------------------------------------------------------------------------
 

@@ -49,6 +49,9 @@ export default function App() {
         <button className="primary" onClick={() => { setSelection({ block: '72', stack: '12', floor: 39 }); flyTo({ kind: 'myUnit' }); }}>
           My unit
         </button>
+        <button className="primary" onClick={() => flyTo({ kind: 'unitView' })} title="See the view from #39-12">
+          From my unit
+        </button>
       </div>
       <SidePanel
         selection={selection}

@@ -1,5 +1,9 @@
 import maplibregl, { type Map as MlMap } from 'maplibre-gl';
+import { MY_UNIT } from '../data/penrith';
+import { unitPoint } from '../data/geometry';
 import { CATEGORY_BY_ID, PLACES, formatDistance, walkMinutes, type CategoryId, type Place } from '../data/nearby';
+
+const unitLngLat = unitPoint(MY_UNIT.stack, MY_UNIT.floor).lngLat;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
@@ -51,6 +55,21 @@ export function createPlaceMarkers(map: MlMap) {
       if (!popup.isOpen()) return;
       const open = entries.find((e) => popup.getLngLat()?.lng === e.p.lng && popup.getLngLat()?.lat === e.p.lat);
       if (open && !on.has(open.p.cat)) popup.remove();
+    },
+    /** Looking out from the unit: markers behind the camera get mirrored onto the screen, so hide them. */
+    setFacing(bearing: number | null) {
+      const from = unitLngLat;
+      for (const e of entries) {
+        let hide = false;
+        if (bearing != null) {
+          const dE = (e.p.lng - from[0]) * Math.cos((from[1] * Math.PI) / 180);
+          const dN = e.p.lat - from[1];
+          const b = (Math.atan2(dE, dN) * 180) / Math.PI;
+          const diff = Math.abs(((b - bearing + 540) % 360) - 180);
+          hide = diff > 75;
+        }
+        e.el.classList.toggle('behind', hide);
+      }
     },
     focus(p: Place) {
       focused?.classList.remove('focused');

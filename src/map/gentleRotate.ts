@@ -3,8 +3,13 @@ import type { Map as MlMap } from 'maplibre-gl';
 /**
  * Replaces MapLibre's built-in right-drag / ctrl+drag rotate-and-tilt, whose speed is
  * hardcoded (0.8° bearing, 0.5° pitch per pixel), with a slower version.
+ * `override` may claim a drag (return true) — used to look around from the unit.
  */
-export function enableGentleRotate(map: MlMap, { bearingPerPx = 0.3, pitchPerPx = 0.18 } = {}) {
+export function enableGentleRotate(
+  map: MlMap,
+  { bearingPerPx = 0.3, pitchPerPx = 0.18 } = {},
+  override?: (dBearing: number, dPitch: number) => boolean,
+) {
   map.dragRotate.disable();
   const canvas = map.getCanvasContainer();
   let last: { x: number; y: number } | null = null;
@@ -13,6 +18,10 @@ export function enableGentleRotate(map: MlMap, { bearingPerPx = 0.3, pitchPerPx 
 
   const flush = () => {
     frame = 0;
+    if (override?.(pending.bearing, pending.pitch)) {
+      pending = { bearing: 0, pitch: 0 };
+      return;
+    }
     map.jumpTo({
       bearing: map.getBearing() + pending.bearing,
       pitch: Math.min(map.getMaxPitch(), Math.max(map.getMinPitch(), map.getPitch() + pending.pitch)),
