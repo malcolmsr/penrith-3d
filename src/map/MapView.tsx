@@ -62,7 +62,7 @@ export default function MapView(props: Props) {
       container: container.current!,
       style: STYLE_URL,
       ...SITE_VIEW,
-      maxPitch: 80,
+      maxPitch: 85,
       antialias: true,
       attributionControl: { compact: true },
     });
@@ -126,8 +126,8 @@ export default function MapView(props: Props) {
         paint: {
           'fill-extrusion-color': ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 6],
             0, '#f6f7f9', 150, '#eef0f4'],
-          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 6],
-          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+          'fill-extrusion-height': realisticHeight('render_height', 6),
+          'fill-extrusion-base': realisticHeight('render_min_height', 0),
           'fill-extrusion-opacity': 0.92,
           'fill-extrusion-vertical-gradient': false,
         },
@@ -219,7 +219,7 @@ export default function MapView(props: Props) {
   }, [props.fly.nonce]);
 
   function enterUnitView(map: MlMap) {
-    const l = { bearing: UNIT_DEFAULT_BEARING, pitch: 78 };
+    const l = { bearing: UNIT_DEFAULT_BEARING, pitch: 82 };
     setLook(l);
     lockNavigation(map, true);
     map.setFilter('penrith-towers', HIDE_OWN_TOWER_TOP);
@@ -284,6 +284,23 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const normalise = (b: number) => ((b % 360) + 360) % 360;
 
 // ------------------------------------------------------------------------------
+
+/**
+ * OpenMapTiles turns OSM `building:levels` into height at 3.66 m per storey, which makes
+ * Singapore HDB blocks (~2.8–3.0 m floor-to-floor) ~25% too tall. When a height is an exact
+ * multiple of 3.66 it almost certainly came from a storey count, so rebuild it at 3.0 m;
+ * explicitly tagged heights are left alone.
+ */
+const OMT_M_PER_LEVEL = 3.66;
+const REAL_M_PER_LEVEL = 3.0;
+function realisticHeight(prop: string, fallback: number): ExpressionSpecification {
+  const h: ExpressionSpecification = ['coalesce', ['get', prop], fallback];
+  const levels: ExpressionSpecification = ['round', ['/', h, OMT_M_PER_LEVEL]];
+  return ['case',
+    ['all', ['>=', levels, 2], ['<=', ['abs', ['-', h, ['*', levels, OMT_M_PER_LEVEL]]], 0.5]],
+    ['*', levels, REAL_M_PER_LEVEL],
+    h];
+}
 
 /**
  * Map centre (a ground point) that puts a point `alt` metres up at screen centre: the

@@ -4,7 +4,7 @@ import { unitPoint } from '../data/geometry';
 
 /** Stack 12 sits on the south-east corner of Block 72; its main façade faces plan-south. */
 export const UNIT_DEFAULT_BEARING = Math.round(180 + SITE_ROTATION_DEG);
-export const UNIT_PITCH_RANGE: [number, number] = [55, 80];
+export const UNIT_PITCH_RANGE: [number, number] = [55, 85];
 const EYE_HEIGHT = 1.6;
 
 export interface Look {
