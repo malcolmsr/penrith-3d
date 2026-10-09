@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { BLOCKS, MY_UNIT, PROJECT, STACKS, STACK_COLORS, type BlockId } from '../data/penrith';
 import type { Selection } from '../map/MapView';
 
@@ -8,8 +9,7 @@ interface Props {
   setShowContext: (v: boolean) => void;
   showLabels: boolean;
   setShowLabels: (v: boolean) => void;
-  showPois: boolean;
-  setShowPois: (v: boolean) => void;
+  nearby: ReactNode;
   sunHour: number;
   setSunHour: (v: number) => void;
 }
@@ -47,6 +47,8 @@ export default function SidePanel(p: Props) {
           <div className="muted small">Block {MY_UNIT.block} · Type {MY_UNIT.type} · {MY_UNIT.bedrooms} BR · {MY_UNIT.sqm} sqm</div>
         </div>
       </section>
+
+      {p.nearby}
 
       <section className="card">
         <label className="field-label">Block</label>
@@ -98,7 +100,6 @@ export default function SidePanel(p: Props) {
       <section className="card toggles">
         <Toggle label="Surrounding buildings" on={p.showContext} set={p.setShowContext} />
         <Toggle label="Block labels" on={p.showLabels} set={p.setShowLabels} />
-        <Toggle label="Landmarks" on={p.showPois} set={p.setShowPois} />
       </section>
     </aside>
   );

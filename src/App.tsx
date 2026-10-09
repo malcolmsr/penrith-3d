@@ -2,12 +2,17 @@ import { useCallback, useRef, useState } from 'react';
 import MapView, { type FlyTarget, type Selection } from './map/MapView';
 import TopBar from './components/TopBar';
 import SidePanel from './components/SidePanel';
+import NearbyPanel from './components/NearbyPanel';
+import { CATEGORIES, type CategoryId, type Place } from './data/nearby';
 
 export default function App() {
   const [selection, setSelection] = useState<Selection>({ block: null, stack: null, floor: null });
   const [showContext, setShowContext] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
-  const [showPois, setShowPois] = useState(true);
+  const [activeCats, setActiveCats] = useState<CategoryId[]>(() => CATEGORIES.filter((c) => c.defaultOn).map((c) => c.id));
+  const [listCat, setListCat] = useState<CategoryId>('transport');
+  const [showRings, setShowRings] = useState(false);
+  const [focusPlace, setFocusPlace] = useState<{ place: Place; nonce: number } | null>(null);
   const [sunHour, setSunHour] = useState(() => {
     const sgHour = (new Date().getUTCHours() + 8) % 24;
     return sgHour >= 7 && sgHour <= 19 ? sgHour : 15;
@@ -31,7 +36,9 @@ export default function App() {
         onSelect={select}
         showContext={showContext}
         showLabels={showLabels}
-        showPois={showPois}
+        activeCats={activeCats}
+        showRings={showRings}
+        focusPlace={focusPlace}
         sunHour={sunHour}
         fly={fly}
       />
@@ -49,8 +56,17 @@ export default function App() {
         setShowContext={setShowContext}
         showLabels={showLabels}
         setShowLabels={setShowLabels}
-        showPois={showPois}
-        setShowPois={setShowPois}
+        nearby={
+          <NearbyPanel
+            activeCats={activeCats}
+            setActiveCats={setActiveCats}
+            listCat={listCat}
+            setListCat={setListCat}
+            showRings={showRings}
+            setShowRings={setShowRings}
+            onPick={(place) => setFocusPlace((f) => ({ place, nonce: (f?.nonce ?? 0) + 1 }))}
+          />
+        }
         sunHour={sunHour}
         setSunHour={setSunHour}
       />

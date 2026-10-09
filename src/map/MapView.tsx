@@ -3,7 +3,8 @@ import maplibregl, { type ExpressionSpecification, type Map as MlMap } from 'map
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { BLOCKS, MY_UNIT, OSM_PENRITH_IDS, SITE_ANCHOR, STACK_COLORS, type BlockId } from '../data/penrith';
 import { blockTop, buildGroundFeatures, buildTowerFeatures, stackTop, unitPoint } from '../data/geometry';
-import { POIS, POI_ICON } from '../data/pois';
+import { DISTANCE_RINGS, type CategoryId, type Place } from '../data/nearby';
+import { createPlaceMarkers, distanceRings } from './places';
 import { sgDateAt, sunPosition } from './sun';
 
 export interface Selection {
@@ -12,7 +13,7 @@ export interface Selection {
   floor: number | null;
 }
 
-const PAD = () => ({ top: 70, bottom: 20, left: 20, right: window.innerWidth > 720 ? 320 : 20 });
+const PAD = () => ({ top: 70, bottom: 20, left: 20, right: window.innerWidth > 720 ? 360 : 20 });
 
 export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block'; block?: BlockId; nonce: number };
 
@@ -21,7 +22,9 @@ interface Props {
   onSelect: (s: Selection) => void;
   showContext: boolean;
   showLabels: boolean;
-  showPois: boolean;
+  activeCats: CategoryId[];
+  showRings: boolean;
+  focusPlace: { place: Place; nonce: number } | null;
   sunHour: number;
   fly: FlyTarget;
 }
@@ -40,6 +43,7 @@ export default function MapView(props: Props) {
   propsRef.current = props;
   const labelsRef = useRef<Label[]>([]);
   const readyRef = useRef(false);
+  const placesRef = useRef<ReturnType<typeof createPlaceMarkers> | null>(null);
 
   // ---- init once -------------------------------------------------------------
   useEffect(() => {
@@ -77,6 +81,17 @@ export default function MapView(props: Props) {
         filter: ['==', ['get', 'kind'], 'site'],
         paint: { 'line-color': '#ff3d71', 'line-width': 1.5, 'line-dasharray': [3, 2] },
       }, firstSymbol);
+
+      map.addSource('rings', { type: 'geojson', data: distanceRings([SITE_ANCHOR.lng, SITE_ANCHOR.lat], DISTANCE_RINGS) });
+      map.addLayer({
+        id: 'rings-line', type: 'line', source: 'rings', filter: ['==', ['geometry-type'], 'LineString'],
+        paint: { 'line-color': '#2f5bea', 'line-width': 2.5, 'line-opacity': 0.85, 'line-dasharray': [3, 2] },
+      }, firstSymbol);
+      map.addLayer({
+        id: 'rings-label', type: 'symbol', source: 'rings', filter: ['==', ['geometry-type'], 'Point'],
+        layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 12 },
+        paint: { 'text-color': '#2f5bea', 'text-halo-color': '#fff', 'text-halo-width': 2 },
+      });
 
       // Surrounding city: every OSM building extruded in neutral grey.
       map.addLayer({
@@ -123,8 +138,9 @@ export default function MapView(props: Props) {
       map.on('mouseleave', 'penrith-towers', () => (map.getCanvas().style.cursor = ''));
 
       buildLabels(map, labelsRef, propsRef);
+      placesRef.current = createPlaceMarkers(map);
       readyRef.current = true;
-      applyAll(map, propsRef.current);
+      applyAll(map, propsRef.current, placesRef.current);
     });
 
     return () => {
@@ -136,8 +152,17 @@ export default function MapView(props: Props) {
   // ---- react to prop changes ---------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
-    if (map && readyRef.current) applyAll(map, props);
-  }, [props.selection, props.showContext, props.showLabels, props.showPois, props.sunHour]);
+    if (map && readyRef.current) applyAll(map, props, placesRef.current);
+  }, [props.selection, props.showContext, props.showLabels, props.activeCats, props.showRings, props.sunHour]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const fp = props.focusPlace;
+    if (!map || !fp) return;
+    if (!props.activeCats.includes(fp.place.cat)) return;
+    placesRef.current?.focus(fp.place);
+    map.flyTo({ center: [fp.place.lng, fp.place.lat], zoom: Math.max(map.getZoom(), 16.5), duration: 1400 });
+  }, [props.focusPlace?.nonce]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -200,7 +225,7 @@ function towerColor(sel: Selection): ExpressionSpecification {
     base] as unknown as ExpressionSpecification;
 }
 
-function applyAll(map: MlMap, p: Props) {
+function applyAll(map: MlMap, p: Props, places: ReturnType<typeof createPlaceMarkers> | null) {
   map.setPaintProperty('penrith-towers', 'fill-extrusion-color', towerColor(p.selection));
   map.setLayoutProperty('context-buildings', 'visibility', p.showContext ? 'visible' : 'none');
 
@@ -213,7 +238,8 @@ function applyAll(map: MlMap, p: Props) {
     intensity: altitude < 0 ? 0.15 : 0.2 + 0.15 * Math.min(1, altitude / 60),
   });
 
-  document.querySelectorAll<HTMLElement>('.poi-marker').forEach((el) => (el.style.display = p.showPois ? '' : 'none'));
+  places?.setVisible(p.activeCats);
+  for (const id of ['rings-line', 'rings-label']) map.setLayoutProperty(id, 'visibility', p.showRings ? 'visible' : 'none');
   map.triggerRepaint();
 }
 
@@ -259,13 +285,6 @@ function buildLabels(map: MlMap, labelsRef: React.MutableRefObject<Label[]>, pro
   labels.push({ el: mine, ...unitPoint(MY_UNIT.stack, MY_UNIT.floor), visible: () => propsRef.current.showLabels, side: true });
 
   labelsRef.current = labels;
-
-  for (const poi of POIS) {
-    const el = document.createElement('div');
-    el.className = `poi-marker poi-${poi.kind}`;
-    el.innerHTML = `<i>${POI_ICON[poi.kind]}</i><span>${poi.name}</span>`;
-    new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([poi.lng, poi.lat]).addTo(map);
-  }
 }
 
 /** Project 3D mercator points with the frame's matrix and move label elements there. */
