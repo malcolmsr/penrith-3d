@@ -1,0 +1,6 @@
+node_modules
+dist
+*.tsbuildinfo
+# Never commit purchase documents or personal files
+*.pdf
+*.mp4
