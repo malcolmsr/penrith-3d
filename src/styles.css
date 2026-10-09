@@ -145,6 +145,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-style: normal; font-size: 10px; font-weight: 700; color: #fff; background: var(--c); border-radius: 999px; padding: 0 6px;
 }
 .place-marker:hover, .place-marker.focused { z-index: 3; }
+.place-marker.icon-only span { display: none; }
+.place-marker.icon-only:hover span { display: flex; }
 .place-marker.focused i { transform: scale(1.3); box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 30%, transparent); }
 .place-marker.sub-mrt i { background: var(--c); color: #fff; font-weight: 800; border-color: #fff; }
 

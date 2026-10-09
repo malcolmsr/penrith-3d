@@ -24,7 +24,7 @@ export function placeDetailHtml(p: Place): string {
   </div>`;
 }
 
-/** Everything in a group, listed by category then distance. */
+/** Everything in a (single-category) group, by sub-type then distance. */
 function groupListHtml(anchor: Place, members: Place[]): string {
   const sections = CATEGORIES.map((c) => {
     const items = members.filter((m) => m.cat === c.id).sort((a, b) => a.d - b.d);
@@ -36,13 +36,13 @@ function groupListHtml(anchor: Place, members: Place[]): string {
     return `<div class="gl-sec"><div class="gl-head" style="color:${c.color}">${c.icon} ${c.label} · ${items.length}</div><ul>${rows}</ul></div>`;
   }).join('');
   return `<div class="pp gl">
-    <div class="pp-name">${esc(anchor.name)}</div>
-    <div class="pp-dist">${members.length} place${members.length === 1 ? '' : 's'} here · ${formatDistance(anchor.d)} from Penrith · ~${walkMinutes(anchor.d)} min walk</div>
+    <div class="pp-name">${members.length} ${esc(CATEGORY_BY_ID[anchor.cat].label.toLowerCase())} places around here</div>
+    <div class="pp-dist">Nearest ${formatDistance(Math.min(...members.map((m) => m.d)))} from Penrith · zoom in to see each one</div>
     <div class="gl-body">${sections}</div>
   </div>`;
 }
 
-/** Which place should name a group: malls first, then hawker centres, MRT, supermarkets… */
+/** Who gets a label first (and names a group): malls, MRT, hawker centres, supermarkets… */
 function priority(p: Place): number {
   const order: Record<string, number> = {
     mall: 0, mrt: 1, hawker: 2, supermarket: 3, wet_market: 3, polyclinic: 4, hospital: 4, primary: 5,
@@ -57,13 +57,15 @@ const boxFor = (pt: { x: number; y: number }, label: string) => {
   const w = 24 + 12 + label.length * LABEL_PX_PER_CHAR;
   return { x0: pt.x - 12, x1: pt.x - 12 + w, y0: pt.y - 13, y1: pt.y + 13 };
 };
+const iconBox = (pt: { x: number; y: number }) => ({ x0: pt.x - 12, x1: pt.x + 12, y0: pt.y - 12, y1: pt.y + 12 });
 type Box = ReturnType<typeof boxFor>;
 const overlaps = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 
 /**
- * Nearby places as always-labelled HTML markers. Places whose labels would collide on
- * screen are grouped under one marker (named after the most important member, e.g. the
- * mall they're in); clicking a group lists everything in it. Regrouped after every move.
+ * Nearby places as labelled HTML markers. Places of the *same* category whose labels would
+ * collide are grouped under one marker ("+N more"); clicking it lists them. Places of
+ * different categories are never merged: when one would cover another's label it shows
+ * as an icon only, with its name on hover. Regrouped after every move.
  */
 export function createPlaceMarkers(map: MlMap) {
   const popup = new maplibregl.Popup({ offset: 14, closeButton: true, maxWidth: '300px', className: 'place-popup' });
@@ -84,38 +86,49 @@ export function createPlaceMarkers(map: MlMap) {
   const rebuild = () => {
     for (const m of markers) m.remove();
     markers = [];
-    // `ghost`: a mall that isn't itself toggled on, kept only to name the group of places inside it.
-    const groups: { anchor: Place; members: Place[]; box: Box; ghost: boolean }[] = [];
+    // `labelled`: false for icon-only markers squeezed in beside another category's label.
+    const groups: { anchor: Place; members: Place[]; box: Box; labelled: boolean }[] = [];
     const canvas = map.getCanvas();
     const W = canvas.clientWidth, H = canvas.clientHeight;
+    const sameCat = (p: Place, box: Box) => groups.find((g) => g.anchor.cat === p.cat && overlaps(g.box, box));
 
     for (const p of ranked) {
-      const ghost = !visibleCats.has(p.cat);
-      if ((ghost && p.sub !== 'mall') || isBehind(p)) continue;
+      if (!visibleCats.has(p.cat) || isBehind(p)) continue;
       const pt = map.project([p.lng, p.lat]);
       if (pt.x < -200 || pt.y < -50 || pt.x > W + 50 || pt.y > H + 50) continue;
-      const box = boxFor(pt, p.name);
-      // The focused place always keeps its own marker so it's easy to spot.
-      const host = p === focusedPlace ? undefined : groups.find((g) => overlaps(g.box, box));
+      // The focused place always keeps its own labelled marker so it's easy to spot.
+      if (p === focusedPlace) {
+        groups.push({ anchor: p, members: [p], box: boxFor(pt, p.name), labelled: true });
+        continue;
+      }
+      const box = boxFor(pt, `${p.name} +9 more`);
+      const host = sameCat(p, box);
       if (host) {
-        if (!ghost) host.members.push(p);
+        host.members.push(p);
+      } else if (!groups.some((g) => overlaps(g.box, box))) {
+        groups.push({ anchor: p, members: [p], box, labelled: true });
       } else {
-        groups.push({ anchor: p, members: ghost ? [] : [p], box: boxFor(pt, `${p.name} +99`), ghost });
+        // No room for a label: fall back to just the icon, unless that too would sit on
+        // another marker — then it waits until the user zooms in.
+        const icon = iconBox(pt);
+        const iconHost = sameCat(p, icon);
+        if (iconHost) iconHost.members.push(p);
+        else if (!groups.some((g) => overlaps(g.box, icon))) groups.push({ anchor: p, members: [p], box: icon, labelled: false });
       }
     }
 
     for (const g of groups) {
       const { anchor: a, members } = g;
-      if (g.ghost && members.length === 0) continue;
       const cat = CATEGORY_BY_ID[a.cat];
       const el = document.createElement('div');
-      const extra = g.ghost ? members.length : members.length - 1;
-      el.className = `place-marker sub-${a.sub}${extra ? ' group' : ''}${a === focusedPlace ? ' focused' : ''}`;
+      const extra = members.length - 1;
+      el.className = `place-marker sub-${a.sub}${extra ? ' group' : ''}${g.labelled ? '' : ' icon-only'}${a === focusedPlace ? ' focused' : ''}`;
       el.style.setProperty('--c', cat.color);
-      el.innerHTML = `<i>${iconFor(a)}</i><span>${esc(a.name)}${extra ? `<em>+${extra}</em>` : ''}</span>`;
+      const more = extra ? `<em title="${extra} more ${esc(cat.label.toLowerCase())} nearby — click to list">+${extra} more</em>` : '';
+      el.innerHTML = `<i>${iconFor(a)}</i><span>${esc(a.name)}${more}</span>`;
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        const html = g.ghost || extra ? groupListHtml(a, members) : placeDetailHtml(a);
+        const html = extra ? groupListHtml(a, members) : placeDetailHtml(a);
         popup.setLngLat([a.lng, a.lat]).setHTML(html).addTo(map);
       });
       markers.push(new maplibregl.Marker({ element: el, anchor: 'left', offset: [-12, 0] }).setLngLat([a.lng, a.lat]).addTo(map));
