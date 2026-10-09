@@ -6,8 +6,6 @@ import {
 interface Props {
   activeCats: CategoryId[];
   setActiveCats: (c: CategoryId[]) => void;
-  listCat: CategoryId;
-  setListCat: (c: CategoryId) => void;
   showRings: boolean;
   setShowRings: (v: boolean) => void;
   onPick: (p: Place) => void;
@@ -26,10 +24,12 @@ const HIGHLIGHTS: { sub: string; label: string }[] = [
 
 const PAGE = 12;
 
+/** List filter: everything shown, one category (`c:food`) or one sub-type (`s:food:hawker`). */
+type Filter = string;
+
 export default function NearbyPanel(p: Props) {
-  const [sub, setSub] = useState<string>('all');
+  const [filter, setFilter] = useState<Filter>('all');
   const [limit, setLimit] = useState(PAGE);
-  const cat = CATEGORY_BY_ID[p.listCat];
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -37,21 +37,18 @@ export default function NearbyPanel(p: Props) {
     return c;
   }, []);
 
-  const list = useMemo(
-    () => PLACES.filter((pl) => pl.cat === p.listCat && (sub === 'all' || pl.sub === sub)),
-    [p.listCat, sub],
-  );
+  // What's listed is exactly what's on the map (optionally narrowed by the filter).
+  const list = useMemo(() => {
+    const [kind, cat, sub] = filter.split(':');
+    return PLACES.filter((pl) => p.activeCats.includes(pl.cat)
+      && (kind === 'all' || (pl.cat === cat && (kind === 'c' || pl.sub === sub))));
+  }, [p.activeCats, filter]);
 
-  const chooseCat = (id: CategoryId) => {
+  const toggleCat = (id: CategoryId) => {
     const on = p.activeCats.includes(id);
-    if (id === p.listCat && on) {
-      p.setActiveCats(p.activeCats.filter((c) => c !== id)); // second click hides it
-    } else {
-      if (!on) p.setActiveCats([...p.activeCats, id]);
-      p.setListCat(id);
-      setSub('all');
-      setLimit(PAGE);
-    }
+    p.setActiveCats(on ? p.activeCats.filter((c) => c !== id) : [...p.activeCats, id]);
+    if (on && filter !== 'all' && filter.split(':')[1] === id) setFilter('all');
+    setLimit(PAGE);
   };
 
   const pick = (pl: Place) => {
@@ -59,15 +56,17 @@ export default function NearbyPanel(p: Props) {
     p.onPick(pl);
   };
 
+  const shown = CATEGORIES.filter((c) => p.activeCats.includes(c.id));
+
   return (
     <section className="card nearby">
-      <label className="field-label">Nearest essentials</label>
+      <label className="field-label">Nearest essentials <span className="muted">walk</span></label>
       <div className="highlights">
         {HIGHLIGHTS.map(({ sub: s, label }) => {
           const pl = nearest(s);
           if (!pl) return null;
           return (
-            <button key={s} className="hl" onClick={() => pick(pl)} title={pl.name}>
+            <button key={s} className="hl" onClick={() => pick(pl)} title={`Show ${pl.name} on the map`}>
               <span className="hl-label">{label}</span>
               <b>{walkMinutes(pl.d)} min</b>
               <span className="hl-name">{pl.name.replace(/\s*\(\d+\)$/, '')}</span>
@@ -76,46 +75,66 @@ export default function NearbyPanel(p: Props) {
         })}
       </div>
 
-      <label className="field-label">On the map</label>
+      <label className="field-label">
+        Show on map
+        <span className="chip-actions">
+          <button className="link" onClick={() => p.setActiveCats(CATEGORIES.map((c) => c.id))}>All</button>
+          <button className="link" onClick={() => { p.setActiveCats([]); setFilter('all'); }}>None</button>
+        </span>
+      </label>
       <div className="cat-chips">
         {CATEGORIES.map((c) => {
           const on = p.activeCats.includes(c.id);
           return (
-            <button key={c.id} className={`cat-chip${on ? ' on' : ''}${p.listCat === c.id ? ' listing' : ''}`}
-              style={{ ['--c' as string]: c.color }} onClick={() => chooseCat(c.id)}>
+            <button key={c.id} className={`cat-chip${on ? ' on' : ''}`} aria-pressed={on}
+              style={{ ['--c' as string]: c.color }} onClick={() => toggleCat(c.id)}>
               <span>{c.icon}</span>{c.label}<em>{counts[c.id] ?? 0}</em>
             </button>
           );
         })}
       </div>
 
-      <div className="list-head">
-        <b style={{ color: cat.color }}>{cat.icon} {cat.label}</b>
-        <select value={sub} onChange={(e) => { setSub(e.target.value); setLimit(PAGE); }}>
-          <option value="all">All types</option>
-          {Object.entries(cat.subs).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select>
-      </div>
+      {shown.length > 0 && (
+        <div className="list-head">
+          <b>{list.length} places</b>
+          <select value={filter} onChange={(e) => { setFilter(e.target.value); setLimit(PAGE); }}>
+            <option value="all">All shown</option>
+            {shown.map((c) => (
+              <optgroup key={c.id} label={c.label}>
+                <option value={`c:${c.id}`}>All {c.label.toLowerCase()}</option>
+                {Object.entries(c.subs).map(([k, v]) => <option key={k} value={`s:${c.id}:${k}`}>{v}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+      )}
       <ul className="place-list">
-        {list.slice(0, limit).map((pl) => (
-          <li key={`${pl.sub}-${pl.name}-${pl.lat}`} onClick={() => pick(pl)}>
-            <div className="pl-main">
-              <span className="pl-name">{pl.name}</span>
-              <span className="pl-sub">
-                {cat.subs[pl.sub] ?? pl.sub}
-                {pl.routes ? ` · ${pl.routes}` : pl.cuisine ? ` · ${pl.cuisine}` : ''}
-              </span>
-            </div>
-            <div className="pl-dist">
-              <b>{formatDistance(pl.d)}</b>
-              <span>{walkMinutes(pl.d)} min</span>
-            </div>
-          </li>
-        ))}
-        {list.length === 0 && <li className="muted small">Nothing mapped nearby.</li>}
+        {list.slice(0, limit).map((pl) => {
+          const cat = CATEGORY_BY_ID[pl.cat];
+          return (
+            <li key={`${pl.sub}-${pl.name}-${pl.lat}`}>
+              <button onClick={() => pick(pl)}>
+                <span className="pl-icon" style={{ ['--c' as string]: cat.color }}>{cat.icon}</span>
+                <span className="pl-main">
+                  <span className="pl-name">{pl.name}</span>
+                  <span className="pl-sub">
+                    {cat.subs[pl.sub] ?? pl.sub}
+                    {pl.routes ? ` · ${pl.routes}` : pl.cuisine ? ` · ${pl.cuisine}` : ''}
+                  </span>
+                </span>
+                <span className="pl-dist">
+                  <b>{formatDistance(pl.d)}</b>
+                  <span>{walkMinutes(pl.d)} min</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+        {shown.length === 0 && <li className="muted small empty">Turn on a category above to see places.</li>}
+        {shown.length > 0 && list.length === 0 && <li className="muted small empty">Nothing mapped nearby.</li>}
       </ul>
       {list.length > limit && (
-        <button className="more" onClick={() => setLimit(limit + PAGE)}>Show more ({list.length - limit})</button>
+        <button className="link more" onClick={() => setLimit(limit + PAGE)}>Show {Math.min(PAGE, list.length - limit)} more</button>
       )}
 
       <label className="toggle rings-toggle">

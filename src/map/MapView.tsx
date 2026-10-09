@@ -16,9 +16,12 @@ export interface Selection {
   floor: number | null;
 }
 
-const PAD = () => ({ top: 70, bottom: 20, left: 20, right: window.innerWidth > 720 ? 360 : 20 });
+// Keep the subject clear of the side panel (desktop) or bottom sheet + view bar (phone).
+const PAD = () => (window.innerWidth > 720
+  ? { top: 70, bottom: 20, left: 60, right: 360 }
+  : { top: 60, bottom: Math.round(window.innerHeight * 0.45) + 60, left: 50, right: 10 });
 
-export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block' | 'topDown' | 'unitView'; block?: BlockId; nonce: number };
+export type FlyTarget = { kind: 'overview' | 'site' | 'myUnit' | 'block' | 'unitView'; block?: BlockId; nonce: number };
 
 interface Props {
   selection: Selection;
@@ -30,6 +33,9 @@ interface Props {
   focusPlace: { place: Place; nonce: number } | null;
   sunHour: number;
   fly: FlyTarget;
+  /** The user grabbed the camera (pan, zoom, rotate), so no named view is current any more. */
+  onUserMove: () => void;
+  onExitUnitView: () => void;
 }
 
 const SITE_VIEW = { center: aimAt([SITE_ANCHOR.lng, SITE_ANCHOR.lat], 60, 60, -30), zoom: 16.7, pitch: 60, bearing: -30 };
@@ -48,6 +54,8 @@ export default function MapView(props: Props) {
   const readyRef = useRef(false);
   const placesRef = useRef<ReturnType<typeof createPlaceMarkers> | null>(null);
   const [bearing, setBearing] = useState(SITE_VIEW.bearing);
+  const [flat, setFlat] = useState(false);
+  const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
   // Non-null while looking out from #39-12.
   const [look, setLookState] = useState<Look | null>(null);
   const lookRef = useRef<Look | null>(null);
@@ -69,7 +77,6 @@ export default function MapView(props: Props) {
     mapRef.current = map;
     map.setPadding(PAD()); // keep the subject clear of the side panel
     if (import.meta.env.DEV) (window as unknown as { __map: MlMap }).__map = map;
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
     enableGentleRotate(map, undefined, (dB, dP) => {
       const l = lookRef.current;
       if (!l) return false;
@@ -79,6 +86,9 @@ export default function MapView(props: Props) {
       return true;
     });
     map.on('rotate', () => setBearing(map.getBearing()));
+    map.on('pitch', () => setFlat(map.getPitch() < 5));
+    const userMoved = () => propsRef.current.onUserMove();
+    for (const ev of ['mousedown', 'wheel', 'touchstart'] as const) map.getCanvasContainer().addEventListener(ev, userMoved, { passive: true });
     // The unit camera's zoom depends on canvas height; re-place it when the window changes.
     map.on('resize', () => {
       if (lookRef.current) map.jumpTo(unitCamera(map, lookRef.current));
@@ -159,8 +169,25 @@ export default function MapView(props: Props) {
         if (p.kind === 'unit') propsRef.current.onSelect({ block: p.block, stack: p.stack, floor: p.floor });
         else propsRef.current.onSelect({ block: p.block, stack: null, floor: null });
       });
-      map.on('mouseenter', 'penrith-towers', () => (map.getCanvas().style.cursor = 'pointer'));
-      map.on('mouseleave', 'penrith-towers', () => (map.getCanvas().style.cursor = ''));
+      // Clicking open ground (not a tower, label or marker) clears the selection.
+      map.on('click', (e) => {
+        if (lookRef.current || e.originalEvent.target !== map.getCanvas()) return;
+        if (map.queryRenderedFeatures(e.point, { layers: ['penrith-towers'] }).length) return;
+        if (propsRef.current.selection.block) propsRef.current.onSelect({ block: null, stack: null, floor: null });
+      });
+      map.on('mousemove', 'penrith-towers', (e) => {
+        map.getCanvas().style.cursor = 'pointer';
+        const f = e.features?.[0]?.properties as { kind: string; block: BlockId; stack: string; floor: number; mine?: boolean } | undefined;
+        if (!f || lookRef.current) return setHover(null);
+        const text = f.kind === 'unit'
+          ? `${f.mine ? 'My unit · ' : ''}#${String(f.floor).padStart(2, '0')}-${f.stack} · Block ${f.block}`
+          : `Block ${f.block}`;
+        setHover({ x: e.point.x, y: e.point.y, text });
+      });
+      map.on('mouseleave', 'penrith-towers', () => {
+        map.getCanvas().style.cursor = '';
+        setHover(null);
+      });
 
       buildLabels(map, labelsRef, propsRef);
       placesRef.current = createPlaceMarkers(map);
@@ -198,11 +225,7 @@ export default function MapView(props: Props) {
       return;
     }
     if (lookRef.current) exitUnitView(map);
-    if (f.kind === 'topDown') {
-      // Toggle: flat north-up plan view, or back to a tilted 3D view from the same spot.
-      const flat = map.getPitch() < 5 && Math.abs(map.getBearing()) < 1;
-      map.easeTo(flat ? { pitch: 60, bearing: -30, duration: 1000 } : { pitch: 0, bearing: 0, duration: 1000 });
-    } else if (f.kind === 'overview') {
+    if (f.kind === 'overview') {
       map.flyTo({ center: [SITE_ANCHOR.lng, SITE_ANCHOR.lat - 0.0025], zoom: 14.8, pitch: 55, bearing: -20, padding: PAD(), duration: 2200 });
     } else if (f.kind === 'site') {
       map.flyTo({ ...SITE_VIEW, padding: PAD(), duration: 1800 });
@@ -256,24 +279,66 @@ export default function MapView(props: Props) {
     const map = mapRef.current;
     if (!map) return;
     exitUnitView(map);
+    props.onExitUnitView();
     const t = unitPoint(MY_UNIT.stack, MY_UNIT.floor);
     map.flyTo({ center: aimAt(t.lngLat, t.alt, 66, -40), zoom: 17.0, pitch: 66, bearing: -40, padding: PAD(), duration: 1800 });
   };
+
+  /** Flat north-up plan view, or back to a tilted 3D view of the same spot. */
+  const toggle2D = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    props.onUserMove();
+    map.easeTo(flat ? { pitch: 60, bearing: -30, duration: 1000 } : { pitch: 0, bearing: 0, duration: 1000 });
+  };
+
+  const zoomBy = (d: number) => {
+    props.onUserMove();
+    mapRef.current?.easeTo({ zoom: mapRef.current.getZoom() + d, duration: 300 });
+  };
+
+  // Esc leaves the unit view or clears the selection; arrow keys turn while looking out.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyRef.current = (e) => {
+    if ((e.target as HTMLElement).closest?.('input, select, textarea')) return;
+    if (e.key === 'Escape') {
+      if (lookRef.current) exit();
+      else if (props.selection.block) props.onSelect({ block: null, stack: null, floor: null });
+    } else if (lookRef.current && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      turn(e.key === 'ArrowLeft' ? -45 : 45);
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyRef.current(e);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const heading = normalise(look ? look.bearing : bearing);
   return (
     <>
       <div ref={container} className="map" />
-      <Compass bearing={look ? look.bearing : bearing} onReset={resetNorth} />
+      <div className="map-controls">
+        <Compass bearing={look ? look.bearing : bearing} onReset={resetNorth} />
+        {!look && (
+          <div className="ctrl-stack">
+            <button onClick={toggle2D} title={flat ? 'Back to 3D' : 'Flat, north-up plan view'}>{flat ? '3D' : '2D'}</button>
+            <button onClick={() => zoomBy(1)} title="Zoom in" aria-label="Zoom in">+</button>
+            <button onClick={() => zoomBy(-1)} title="Zoom out" aria-label="Zoom out">−</button>
+          </div>
+        )}
+      </div>
+      {hover && <div className="hover-tip" style={{ transform: `translate(${hover.x + 14}px, ${hover.y + 14}px)` }}>{hover.text}</div>}
       {look && (
         <div className="unit-view-bar">
-          <button onClick={() => turn(-45)} title="Turn left">◀</button>
+          <button onClick={() => turn(-45)} title="Turn left (←)">◀</button>
           <div>
             <b>View from #{MY_UNIT.floor}-{MY_UNIT.stack}</b>
-            <span>Facing {compassPoint(heading)} · {Math.round(heading)}° · drag to look around</span>
+            <span>Facing {compassPoint(heading)} · {Math.round(heading)}° · drag or ← → to look around</span>
           </div>
-          <button onClick={() => turn(45)} title="Turn right">▶</button>
-          <button className="exit" onClick={exit}>Exit</button>
+          <button onClick={() => turn(45)} title="Turn right (→)">▶</button>
+          <button className="exit" onClick={exit} title="Esc">Exit</button>
         </div>
       )}
     </>
