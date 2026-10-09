@@ -379,7 +379,8 @@ function buildLabels(map: MlMap, labelsRef: React.MutableRefObject<Label[]>, pro
       const st = stackTop(s);
       labels.push({
         el: chip, ...st,
-        visible: () => propsRef.current.selection.block === b.id,
+        // Once a stack is picked (e.g. My unit), only that stack's chip stays.
+        visible: () => propsRef.current.selection.block === b.id && (!propsRef.current.selection.stack || propsRef.current.selection.stack === s),
       });
       // Keep the chip's selected state in sync without React.
       const orig = labels[labels.length - 1].visible;
