@@ -118,6 +118,9 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .block-label b { font-size: 12px; }
 .block-label span { color: var(--muted); }
+.flat .block-label { padding: 2px 6px; border-radius: 6px; }
+.flat .block-label span { display: none; }
+.flat .block-label b { font-size: 11px; }
 .stack-chip {
   width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
   background: #ffcc33; border: 2px solid #fff; font-size: 10px; font-weight: 700;

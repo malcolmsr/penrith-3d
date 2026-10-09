@@ -42,6 +42,8 @@ const SITE_VIEW = { center: aimAt([SITE_ANCHOR.lng, SITE_ANCHOR.lat], 60, 60, -3
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/positron';
 const MY_COLOR = '#ff3d71';
 const DIM_COLOR = '#d9dde3';
+/** Below this pitch the map counts as 2D. */
+const FLAT_PITCH = 5;
 
 type Label = { el: HTMLDivElement; lngLat: [number, number]; alt: number; visible: () => boolean; side?: boolean };
 
@@ -55,6 +57,7 @@ export default function MapView(props: Props) {
   const placesRef = useRef<ReturnType<typeof createPlaceMarkers> | null>(null);
   const [bearing, setBearing] = useState(SITE_VIEW.bearing);
   const [flat, setFlat] = useState(false);
+  const flatRef = useRef(false);
   const [hover, setHover] = useState<{ x: number; y: number; text: string } | null>(null);
   // Non-null while looking out from #39-12.
   const [look, setLookState] = useState<Look | null>(null);
@@ -86,7 +89,14 @@ export default function MapView(props: Props) {
       return true;
     });
     map.on('rotate', () => setBearing(map.getBearing()));
-    map.on('pitch', () => setFlat(map.getPitch() < 5));
+    map.on('pitch', () => {
+      const f = map.getPitch() < FLAT_PITCH;
+      if (f === flatRef.current) return;
+      flatRef.current = f;
+      setFlat(f);
+      map.getContainer().classList.toggle('flat', f);
+      if (readyRef.current) applyAll(map, propsRef.current, placesRef.current, f);
+    });
     const userMoved = () => propsRef.current.onUserMove();
     for (const ev of ['mousedown', 'wheel', 'touchstart'] as const) map.getCanvasContainer().addEventListener(ev, userMoved, { passive: true });
     // The unit camera's zoom depends on canvas height; re-place it when the window changes.
@@ -99,7 +109,11 @@ export default function MapView(props: Props) {
       // Quiet the basemap so the 3D massing reads like the reference "clay" model.
       for (const l of map.getStyle().layers ?? []) {
         if (l.type === 'symbol' && /poi|housenumber/.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
-        if (l.id === 'building' || l.id === 'building-top') map.setLayoutProperty(l.id, 'visibility', 'none');
+        if (l.id === 'building' || l.id === 'building-top') {
+          map.setLayoutProperty(l.id, 'visibility', 'none');
+          // Shown again in 2D; drop OSM's crude Penrith outlines from under our own plan.
+          map.setFilter(l.id, ['!', ['in', ['id'], ['literal', OSM_PENRITH_IDS]]]);
+        }
       }
       const firstSymbol = map.getStyle().layers?.find((l) => l.type === 'symbol')?.id;
 
@@ -155,13 +169,33 @@ export default function MapView(props: Props) {
         },
       });
 
+      // 2D plan: flat stack footprints (the lobby slab of each stack) and lift cores.
+      map.addLayer({
+        id: 'penrith-plan', type: 'fill', source: 'penrith',
+        filter: ['in', ['get', 'kind'], ['literal', ['lobby', 'core']]],
+        layout: { visibility: 'none' },
+        paint: { 'fill-color': planColor(propsRef.current.selection), 'fill-outline-color': '#ffffff' },
+      });
+      map.addLayer({
+        id: 'penrith-plan-mine', type: 'line', source: 'penrith',
+        filter: ['all', ['==', ['get', 'kind'], 'lobby'], ['==', ['get', 'block'], MY_UNIT.block], ['==', ['get', 'stack'], MY_UNIT.stack]],
+        layout: { visibility: 'none' },
+        paint: { 'line-color': MY_COLOR, 'line-width': 3 },
+      });
+
       // Zero-draw custom layer: gives us the camera matrix each frame so HTML labels
       // can be pinned to 3D points (tower tops, my unit) — markers only do ground level.
       map.addLayer({
         id: 'label-projector', type: 'custom', renderingMode: '3d',
-        render: (_gl, matrix) => positionLabels(map, matrix as unknown as number[], labelsRef.current),
+        render: (_gl, matrix) => positionLabels(map, matrix as unknown as number[], labelsRef.current, flatRef.current),
       });
 
+      map.on('click', 'penrith-plan', (e) => {
+        const f = e.features?.[0]?.properties as { block: BlockId; stack: string } | undefined;
+        if (f) propsRef.current.onSelect({ block: f.block, stack: f.stack || null, floor: null });
+      });
+      map.on('mouseenter', 'penrith-plan', () => (map.getCanvas().style.cursor = 'pointer'));
+      map.on('mouseleave', 'penrith-plan', () => (map.getCanvas().style.cursor = ''));
       map.on('click', 'penrith-towers', (e) => {
         const f = e.features?.[0];
         if (!f) return;
@@ -172,7 +206,7 @@ export default function MapView(props: Props) {
       // Clicking open ground (not a tower, label or marker) clears the selection.
       map.on('click', (e) => {
         if (lookRef.current || e.originalEvent.target !== map.getCanvas()) return;
-        if (map.queryRenderedFeatures(e.point, { layers: ['penrith-towers'] }).length) return;
+        if (map.queryRenderedFeatures(e.point, { layers: ['penrith-towers', 'penrith-plan'] }).length) return;
         if (propsRef.current.selection.block) propsRef.current.onSelect({ block: null, stack: null, floor: null });
       });
       map.on('mousemove', 'penrith-towers', (e) => {
@@ -192,7 +226,7 @@ export default function MapView(props: Props) {
       buildLabels(map, labelsRef, propsRef);
       placesRef.current = createPlaceMarkers(map);
       readyRef.current = true;
-      applyAll(map, propsRef.current, placesRef.current);
+      applyAll(map, propsRef.current, placesRef.current, flatRef.current);
     });
 
     return () => {
@@ -204,7 +238,7 @@ export default function MapView(props: Props) {
   // ---- react to prop changes ---------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
-    if (map && readyRef.current) applyAll(map, props, placesRef.current);
+    if (map && readyRef.current) applyAll(map, props, placesRef.current, flatRef.current);
   }, [props.selection, props.showContext, props.showLabels, props.activeCats, props.showRings, props.sunHour]);
 
   useEffect(() => {
@@ -284,12 +318,12 @@ export default function MapView(props: Props) {
     map.flyTo({ center: aimAt(t.lngLat, t.alt, 66, -40), zoom: 17.0, pitch: 66, bearing: -40, padding: PAD(), duration: 1800 });
   };
 
-  /** Flat north-up plan view, or back to a tilted 3D view of the same spot. */
+  /** Flat map view, or back to tilted 3D — same spot, same heading. */
   const toggle2D = () => {
     const map = mapRef.current;
     if (!map) return;
     props.onUserMove();
-    map.easeTo(flat ? { pitch: 60, bearing: -30, duration: 1000 } : { pitch: 0, bearing: 0, duration: 1000 });
+    map.easeTo({ pitch: flat ? 60 : 0, duration: 800 });
   };
 
   const zoomBy = (d: number) => {
@@ -323,7 +357,7 @@ export default function MapView(props: Props) {
         <Compass bearing={look ? look.bearing : bearing} onReset={resetNorth} />
         {!look && (
           <div className="ctrl-stack">
-            <button onClick={toggle2D} title={flat ? 'Back to 3D' : 'Flat, north-up plan view'}>{flat ? '3D' : '2D'}</button>
+            <button onClick={toggle2D} title={flat ? 'Back to 3D' : 'Flat map view'}>{flat ? '3D' : '2D'}</button>
             <button onClick={() => zoomBy(1)} title="Zoom in" aria-label="Zoom in">+</button>
             <button onClick={() => zoomBy(-1)} title="Zoom out" aria-label="Zoom out">−</button>
           </div>
@@ -403,9 +437,22 @@ function towerColor(sel: Selection): ExpressionSpecification {
     base] as unknown as ExpressionSpecification;
 }
 
-function applyAll(map: MlMap, p: Props, places: ReturnType<typeof createPlaceMarkers> | null) {
+function planColor(sel: Selection): ExpressionSpecification {
+  const stackColor = ['match', ['get', 'stack'], ...Object.entries(STACK_COLORS).flat(), '#c9ced6'];
+  if (!sel.stack) return stackColor as unknown as ExpressionSpecification;
+  return ['case', ['any', ['==', ['get', 'stack'], sel.stack], ['==', ['get', 'kind'], 'core']], stackColor, DIM_COLOR] as unknown as ExpressionSpecification;
+}
+
+/** `flat`: the 2D map look — basemap building footprints instead of any 3D massing. */
+function applyAll(map: MlMap, p: Props, places: ReturnType<typeof createPlaceMarkers> | null, flat: boolean) {
+  const show = (id: string, on: boolean) => map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
   map.setPaintProperty('penrith-towers', 'fill-extrusion-color', towerColor(p.selection));
-  map.setLayoutProperty('context-buildings', 'visibility', p.showContext ? 'visible' : 'none');
+  map.setPaintProperty('penrith-plan', 'fill-color', planColor(p.selection));
+  show('context-buildings', p.showContext && !flat);
+  show('penrith-towers', !flat);
+  show('penrith-plan', flat);
+  show('penrith-plan-mine', flat);
+  show('building', flat);
 
   const { azimuth, altitude } = sunPosition(sgDateAt(p.sunHour), SITE_ANCHOR.lat, SITE_ANCHOR.lng);
   const polar = Math.min(85, Math.max(10, 90 - altitude));
@@ -467,7 +514,7 @@ function buildLabels(map: MlMap, labelsRef: React.MutableRefObject<Label[]>, pro
 }
 
 /** Project 3D mercator points with the frame's matrix and move label elements there. */
-function positionLabels(map: MlMap, m: number[], labels: Label[]) {
+function positionLabels(map: MlMap, m: number[], labels: Label[], flat: boolean) {
   const canvas = map.getCanvas();
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -476,7 +523,8 @@ function positionLabels(map: MlMap, m: number[], labels: Label[]) {
       l.el.style.display = 'none';
       continue;
     }
-    const mc = maplibregl.MercatorCoordinate.fromLngLat(l.lngLat, l.alt);
+    // In 2D, pin labels to the ground so they sit on the footprints, not floating off them.
+    const mc = maplibregl.MercatorCoordinate.fromLngLat(l.lngLat, flat ? 0 : l.alt);
     const x = mc.x, y = mc.y, z = mc.z;
     const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
     const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
@@ -488,7 +536,8 @@ function positionLabels(map: MlMap, m: number[], labels: Label[]) {
     const sx = ((cx / cw + 1) / 2) * w;
     const sy = ((1 - cy / cw) / 2) * h;
     l.el.style.display = '';
-    const anchor = l.side ? 'translate(10px, -50%)' : 'translate(-50%, -100%)';
+    // 3D: labels hang above their point. 2D: centred on it (block tags sit on the lift core).
+    const anchor = l.side ? 'translate(10px, -50%)' : flat ? 'translate(-50%, -50%)' : 'translate(-50%, -100%)';
     l.el.style.transform = `translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px) ${anchor}`;
   }
 }
